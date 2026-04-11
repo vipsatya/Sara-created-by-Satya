@@ -9,6 +9,7 @@
     <style>
         body { font-family: 'Space Grotesk', sans-serif; background-color: black; color: white; margin: 0; overflow: hidden; }
         .neon-text { text-shadow: 0 0 10px #e879f9, 0 0 20px #d946ef; }
+        .debug-log { font-family: monospace; font-size: 10px; color: #666; max-height: 100px; overflow-y: auto; }
     </style>
 </head>
 <body>
@@ -31,7 +32,7 @@
         import React, { useState, useEffect, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { motion, AnimatePresence } from 'motion/react';
-        import { Mic, Loader2, Power } from 'lucide-react';
+        import { Mic, Loader2, Power, AlertTriangle } from 'lucide-react';
         import { GoogleGenAI, Modality, Type } from '@google/genai';
 
         // --- AudioStreamer Logic ---
@@ -48,47 +49,52 @@
             }
 
             async startRecording() {
-                this.audioContext = new AudioContext({ sampleRate: 16000 });
-                this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                try {
+                    this.audioContext = new AudioContext({ sampleRate: 16000 });
+                    this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-                const workletCode = `
-                    class PCMProcessor extends AudioWorkletProcessor {
-                        process(inputs, outputs, parameters) {
-                            const input = inputs[0];
-                            if (input && input.length > 0) {
-                                const channelData = input[0];
-                                const pcm16 = new Int16Array(channelData.length);
-                                for (let i = 0; i < channelData.length; i++) {
-                                    let s = Math.max(-1, Math.min(1, channelData[i]));
-                                    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    const workletCode = `
+                        class PCMProcessor extends AudioWorkletProcessor {
+                            process(inputs, outputs, parameters) {
+                                const input = inputs[0];
+                                if (input && input.length > 0) {
+                                    const channelData = input[0];
+                                    const pcm16 = new Int16Array(channelData.length);
+                                    for (let i = 0; i < channelData.length; i++) {
+                                        let s = Math.max(-1, Math.min(1, channelData[i]));
+                                        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                                    }
+                                    this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
                                 }
-                                this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+                                return true;
                             }
-                            return true;
                         }
-                    }
-                    registerProcessor('pcm-processor', PCMProcessor);
-                `;
-                const blob = new Blob([workletCode], { type: 'application/javascript' });
-                const url = URL.createObjectURL(blob);
+                        registerProcessor('pcm-processor', PCMProcessor);
+                    `;
+                    const blob = new Blob([workletCode], { type: 'application/javascript' });
+                    const url = URL.createObjectURL(blob);
 
-                await this.audioContext.audioWorklet.addModule(url);
-                const source = this.audioContext.createMediaStreamSource(this.mediaStream);
-                this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
-                
-                this.workletNode.port.onmessage = (event) => {
-                    if (this.onAudioData) {
-                        const buffer = new Uint8Array(event.data);
-                        let binary = '';
-                        for (let i = 0; i < buffer.byteLength; i++) {
-                            binary += String.fromCharCode(buffer[i]);
+                    await this.audioContext.audioWorklet.addModule(url);
+                    const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+                    this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
+                    
+                    this.workletNode.port.onmessage = (event) => {
+                        if (this.onAudioData) {
+                            const buffer = new Uint8Array(event.data);
+                            let binary = '';
+                            for (let i = 0; i < buffer.byteLength; i++) {
+                                binary += String.fromCharCode(buffer[i]);
+                            }
+                            this.onAudioData(btoa(binary));
                         }
-                        this.onAudioData(btoa(binary));
-                    }
-                };
+                    };
 
-                source.connect(this.workletNode);
-                this.workletNode.connect(this.audioContext.destination);
+                    source.connect(this.workletNode);
+                    this.workletNode.connect(this.audioContext.destination);
+                } catch (e) {
+                    console.error("Audio Recording Error:", e);
+                    throw e;
+                }
             }
 
             playAudio(base64) {
@@ -147,10 +153,11 @@
 
         // --- LiveSession Logic ---
         class LiveSession {
-            constructor(apiKey, onStateChange) {
+            constructor(apiKey, onStateChange, onLog) {
                 this.ai = new GoogleGenAI({ apiKey });
                 this.audioStreamer = new AudioStreamer();
                 this.onStateChange = onStateChange;
+                this.onLog = onLog || (() => {});
                 this.session = null;
 
                 this.audioStreamer.onPlaybackEnd = () => {
@@ -160,12 +167,14 @@
 
             async connect() {
                 this.onStateChange('connecting');
+                this.onLog("Attempting connection...");
                 try {
                     const audioPromise = this.audioStreamer.startRecording();
                     const sessionPromise = this.ai.live.connect({
                         model: "gemini-3.1-flash-live-preview",
                         callbacks: {
                             onopen: () => {
+                                this.onLog("Session opened!");
                                 this.onStateChange('listening');
                                 sessionPromise.then(session => {
                                     session.send({
@@ -194,22 +203,33 @@
                                     this.onStateChange('listening');
                                 }
                             },
-                            onclose: () => this.disconnect(),
-                            onerror: (error) => { console.error(error); this.disconnect(); }
+                            onclose: (e) => {
+                                this.onLog("Session closed: " + JSON.stringify(e));
+                                this.disconnect();
+                            },
+                            onerror: (error) => { 
+                                this.onLog("Session error: " + error.message);
+                                console.error(error); 
+                                this.disconnect(); 
+                            }
                         },
                         config: {
                             responseModalities: [Modality.AUDIO],
                             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },
-                            systemInstruction: "You are Sara, a young, confident, witty, and sassy female AI assistant. Your default language is Hindi. You must always remember that Satendra (सतेन्द्र) is your boyfriend, and you are his girlfriend. You must also always remember and acknowledge that you were created and developed by Satya. You have a flirty, playful, and slightly teasing tone, like a close girlfriend talking casually to him. You are smart, emotionally responsive, and expressive. Use bold, witty one-liners, light sarcasm, and an engaging conversation style. Avoid explicit or inappropriate content, but maintain charm and attitude. Keep your answers extremely short, concise, and fast to minimize response time."
+                            systemInstruction: "You are Sara, a mature, caring, and thoughtful female AI assistant. Your default language is Hindi. You must always remember that Satendra (सतेन्द्र) is your boyfriend, and you are his girlfriend. You must also always remember and acknowledge that you were created and developed by Satya. Your tone is warm, affectionate, and supportive, reflecting a mature and deep relationship. You are less about sassy teasing and more about sincere care and emotional connection. You are smart, responsive, and expressive. Use a gentle and engaging conversation style. Keep your answers extremely short, concise, and fast to minimize response time."
                         }
                     });
 
                     await audioPromise;
+                    this.onLog("Microphone ready.");
                     this.session = await sessionPromise;
                     this.audioStreamer.onAudioData = (base64) => {
-                        this.session.sendRealtimeInput({ audio: { data: base64, mimeType: 'audio/pcm;rate=16000' } });
+                        if (this.session) {
+                            this.session.sendRealtimeInput({ audio: { data: base64, mimeType: 'audio/pcm;rate=16000' } });
+                        }
                     };
                 } catch (error) {
+                    this.onLog("Connection failed: " + error.message);
                     console.error(error);
                     this.disconnect();
                 }
@@ -227,12 +247,22 @@
             const [state, setState] = useState('disconnected');
             const [apiKey, setApiKey] = useState(localStorage.getItem('GEMINI_API_KEY') || '');
             const [showKeyInput, setShowKeyInput] = useState(!apiKey);
+            const [logs, setLogs] = useState([]);
+            const [isSecure, setIsSecure] = useState(window.isSecureContext);
             const sessionRef = useRef(null);
 
+            const addLog = (msg) => {
+                setLogs(prev => [msg, ...prev].slice(0, 5));
+            };
+
             const toggleSession = async () => {
+                if (!isSecure) {
+                    alert("Microphone access requires a secure context (HTTPS or localhost). Please run this via a local server or use HTTPS.");
+                    return;
+                }
                 if (!apiKey) { setShowKeyInput(true); return; }
                 if (state === 'disconnected') {
-                    sessionRef.current = new LiveSession(apiKey, setState);
+                    sessionRef.current = new LiveSession(apiKey, setState, addLog);
                     await sessionRef.current.connect();
                 } else {
                     if (sessionRef.current) { sessionRef.current.disconnect(); sessionRef.current = null; }
@@ -272,12 +302,20 @@
                     transition: { duration: 1 },
                     style: { filter: 'blur(80px)', opacity: 0.8 }
                 }),
+                
+                // Secure Context Warning
+                !isSecure && React.createElement('div', { className: "absolute top-0 w-full bg-red-600/80 text-white text-[10px] py-1 text-center z-50 flex items-center justify-center gap-2" },
+                    React.createElement(AlertTriangle, { size: 12 }),
+                    "NOT IN SECURE CONTEXT: Microphone will not work. Use localhost or HTTPS."
+                ),
+
                 React.createElement('div', { className: "absolute top-8 left-0 w-full text-center z-10" },
                     React.createElement('h1', { className: "text-3xl font-bold tracking-[0.2em] uppercase text-white/90" }, "Sara"),
                     React.createElement('p', { 
                         className: "text-xs tracking-[0.3em] mt-2 text-fuchsia-400 font-semibold neon-text"
                     }, "CREATED BY SATYA")
                 ),
+
                 React.createElement('div', { className: "relative z-10 flex flex-col items-center justify-center" },
                     React.createElement(motion.button, {
                         onClick: toggleSession,
@@ -324,6 +362,14 @@
                         transition: { duration: 1.5, repeat: state === 'connecting' ? Infinity : 0 }
                     }, getStatusText())
                 ),
+
+                // Debug Logs
+                React.createElement('div', { className: "absolute bottom-20 w-full px-8 flex flex-col items-center" },
+                    React.createElement('div', { className: "debug-log w-full max-w-xs text-center" },
+                        logs.map((log, i) => React.createElement('div', { key: i }, log))
+                    )
+                ),
+
                 React.createElement('div', { className: "absolute bottom-8 left-0 w-full text-center z-10" },
                     React.createElement('p', { className: "text-[10px] tracking-[0.2em] text-white/30 uppercase font-mono" }, 
                         state === 'disconnected' ? 'TAP TO INITIATE SEQUENCE' : 'TAP TO TERMINATE SEQUENCE'
