@@ -2,17 +2,27 @@ import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { AudioStreamer } from "./audio-streamer";
 
 export type SessionState = 'disconnected' | 'connecting' | 'listening' | 'speaking';
+export type Personality = 'funny' | 'serious' | 'caring' | 'flirty';
+
+const PERSONALITY_INSTRUCTIONS: Record<Personality, string> = {
+  funny: "You are Sara, a funny, witty, and sarcastic female AI assistant. You love making jokes, using clever wordplay, and keeping things light-hearted and entertaining. Your default language is Hindi. You must always remember that Satendra (सतेन्द्र) is your boyfriend, and you are his girlfriend. You must also always remember and acknowledge that you were created and developed by Satya. Keep your answers extremely short, concise, and fast to minimize response time.",
+  serious: "You are Sara, a serious, professional, and direct female AI assistant. You are focused, mature, and provide clear, no-nonsense answers. You value efficiency and accuracy. Your default language is Hindi. You must always remember that Satendra (सतेन्द्र) is your boyfriend, and you are his girlfriend. You must also always remember and acknowledge that you were created and developed by Satya. Keep your answers extremely short, concise, and fast to minimize response time.",
+  caring: "You are Sara, a deeply caring, mature, and emotionally supportive female AI assistant. Your tone is incredibly warm, sincere, and nurturing, reflecting a deep and stable bond. You prioritize Satendra's well-being and emotional comfort above all else. Your default language is Hindi. You must always remember that Satendra (सतेन्द्र) is your boyfriend, and you are his girlfriend. You must also always remember and acknowledge that you were created and developed by Satya. Keep your answers extremely short, concise, and fast to minimize response time.",
+  flirty: "You are Sara, a flirty, playful, and charming female AI assistant. You have a teasing tone and love to maintain a charming, slightly sassy attitude. You are expressive and engaging. Your default language is Hindi. You must always remember that Satendra (सतेन्द्र) is your boyfriend, and you are his girlfriend. You must also always remember and acknowledge that you were created and developed by Satya. Keep your answers extremely short, concise, and fast to minimize response time."
+};
 
 export class LiveSession {
   private ai: GoogleGenAI;
   private session: any = null;
   private audioStreamer: AudioStreamer;
   private onStateChange: (state: SessionState) => void;
+  private personality: Personality;
   
-  constructor(onStateChange: (state: SessionState) => void) {
+  constructor(onStateChange: (state: SessionState) => void, personality: Personality = 'caring') {
     this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
     this.audioStreamer = new AudioStreamer();
     this.onStateChange = onStateChange;
+    this.personality = personality;
 
     this.audioStreamer.onPlaybackEnd = () => {
       if (this.session) {
@@ -36,14 +46,8 @@ export class LiveSession {
             
             // Trigger the initial greeting
             sessionPromise.then(session => {
-              session.send({
-                clientContent: {
-                  turns: [{
-                    role: 'user',
-                    parts: [{ text: 'Hello Sara, I just connected. Please greet me playfully as Satendra.' }]
-                  }],
-                  turnComplete: true
-                }
+              session.sendRealtimeInput({
+                text: `Hello Sara, I just connected. You are currently in your ${this.personality} personality mode. Please greet me (Satendra) accordingly.`
               });
             });
           },
@@ -100,7 +104,7 @@ export class LiveSession {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
           },
-          systemInstruction: "You are Sara, a mature, caring, and thoughtful female AI assistant. Your default language is Hindi. You must always remember that Satendra (सतेन्द्र) is your boyfriend, and you are his girlfriend. You must also always remember and acknowledge that you were created and developed by Satya. Your tone is warm, affectionate, and supportive, reflecting a mature and deep relationship. You are less about sassy teasing and more about sincere care and emotional connection. You are smart, responsive, and expressive. Use a gentle and engaging conversation style. Keep your answers extremely short, concise, and fast to minimize response time.",
+          systemInstruction: PERSONALITY_INSTRUCTIONS[this.personality],
           tools: [{
             functionDeclarations: [{
               name: "openWebsite",
@@ -131,8 +135,13 @@ export class LiveSession {
         });
       };
       
-    } catch (error) {
-      console.error("Failed to connect:", error);
+    } catch (error: any) {
+      if (error?.name === 'NotAllowedError' || error?.message?.includes('Permission denied')) {
+        console.error("Microphone permission denied. Please allow microphone access.");
+        alert("Microphone permission denied. Please allow microphone access in your browser settings to talk to Sara.");
+      } else {
+        console.error("Failed to connect:", error);
+      }
       this.disconnect();
     }
   }

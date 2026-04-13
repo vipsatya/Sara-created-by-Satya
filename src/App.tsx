@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mic, MicOff, Loader2, Power } from 'lucide-react';
-import { LiveSession, SessionState } from './lib/live-session';
+import { Mic, MicOff, Loader2, Power, Laugh, Briefcase, Heart, Sparkles } from 'lucide-react';
+import { LiveSession, SessionState, Personality } from './lib/live-session';
 
 export default function App() {
   const [state, setState] = useState<SessionState>('disconnected');
+  const [personality, setPersonality] = useState<Personality>('caring');
   const sessionRef = useRef<LiveSession | null>(null);
 
   useEffect(() => {
@@ -17,7 +18,7 @@ export default function App() {
 
   const toggleSession = async () => {
     if (state === 'disconnected') {
-      sessionRef.current = new LiveSession(setState);
+      sessionRef.current = new LiveSession(setState, personality);
       await sessionRef.current.connect();
     } else {
       if (sessionRef.current) {
@@ -26,6 +27,13 @@ export default function App() {
       }
     }
   };
+
+  const personalities: { id: Personality; icon: any; label: string; color: string }[] = [
+    { id: 'funny', icon: Laugh, label: 'Funny', color: 'text-yellow-400' },
+    { id: 'serious', icon: Briefcase, label: 'Serious', color: 'text-blue-400' },
+    { id: 'caring', icon: Heart, label: 'Caring', color: 'text-red-400' },
+    { id: 'flirty', icon: Sparkles, label: 'Flirty', color: 'text-pink-400' },
+  ];
 
   const getStatusText = () => {
     switch (state) {
@@ -159,6 +167,30 @@ export default function App() {
         >
           {getStatusText()}
         </motion.div>
+
+        {/* Personality Selector */}
+        <div className="mt-12 flex gap-4">
+          {personalities.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => {
+                if (state === 'disconnected') {
+                  setPersonality(p.id);
+                } else {
+                  alert("Please disconnect before changing personality.");
+                }
+              }}
+              className={`flex flex-col items-center gap-2 p-3 rounded-xl transition-all duration-300 ${
+                personality === p.id 
+                  ? 'bg-white/10 border border-white/20 scale-110' 
+                  : 'bg-transparent border border-transparent opacity-40 hover:opacity-70'
+              }`}
+            >
+              <p.icon size={20} className={personality === p.id ? p.color : 'text-white'} />
+              <span className="text-[10px] uppercase tracking-widest font-mono">{p.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Footer */}
